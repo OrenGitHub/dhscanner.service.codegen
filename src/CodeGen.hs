@@ -562,14 +562,25 @@ codeGenExpBinop expBinop = do
     let binopRhs = generatedValue rhs
     let lhsActualType = inferredActualType lhs
     let rhsActualType = inferredActualType rhs
-    let actualType = ActualType.inferFromBinop lhsActualType rhsActualType (Ast.expBinopOperator expBinop)
+    let astOp = Ast.expBinopOperator expBinop
+    let actualType = ActualType.inferFromBinop lhsActualType rhsActualType astOp
     let binopOutput = Bitcode.TmpVariableCtor $ Bitcode.TmpVariable (ActualType.toFqn actualType) location'
-    let binop = Bitcode.BinopContent binopOutput binopLhs binopRhs
+    let binop = Bitcode.BinopContent binopOutput binopLhs binopRhs (astOperatorToBinopOp astOp)
     let content' = Bitcode.Binop binop
     let instruction = Bitcode.Instruction location' content'
     let cfg = Cfg.Normal (Cfg.atom (Cfg.Node instruction))
     let binopCfg = generatedCfg lhs `Cfg.concat` generatedCfg rhs
     return $ GeneratedExp (binopCfg `Cfg.concat` cfg) (Bitcode.VariableCtor binopOutput) actualType
+
+-- | Lower an AST-level operator to the bitcode-level 'Bitcode.BinopOp'
+-- coarse tag. Only the equality variants are preserved; everything else
+-- collapses to 'Bitcode.OtherOp' so downstream analyses ( e.g.
+-- @kb_comparison@ ) can filter on the equality shape without carrying
+-- the full 'Ast.Operator' surface into the bitcode layer.
+astOperatorToBinopOp :: Ast.Operator -> Bitcode.BinopOp
+astOperatorToBinopOp Ast.EQ  = Bitcode.EqOp
+astOperatorToBinopOp Ast.NEQ = Bitcode.NeqOp
+astOperatorToBinopOp _       = Bitcode.OtherOp
 
 -- |
 -- two things happen during codegen of lambdas:

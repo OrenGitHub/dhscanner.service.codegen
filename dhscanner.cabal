@@ -42,7 +42,7 @@ executable codegen
         filepath,
         containers,
         dhscanner-ast >= 1.2.0,
-        dhscanner-bitcode >= 1.0.17,
+        dhscanner-bitcode >= 1.1.0,
         yesod-core,
         http-types,
         fast-logger,
