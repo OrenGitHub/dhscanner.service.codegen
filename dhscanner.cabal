@@ -41,7 +41,7 @@ executable codegen
         base,
         filepath,
         containers,
-        dhscanner-ast >= 1.1.5,
+        dhscanner-ast >= 1.2.0,
         dhscanner-bitcode >= 1.0.17,
         yesod-core,
         http-types,
