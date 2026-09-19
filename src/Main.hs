@@ -9,9 +9,17 @@
 {-# OPTIONS -Wno-unused-matches   #-}
 {-# OPTIONS -Wno-unused-top-binds #-}
 
-import Yesod
+-- Depend on yesod-core directly rather than the `yesod` metapackage :
+-- the metapackage transitively pulls in yesod-persistent and, from
+-- there, the deprecated persistent-template ( now shipped on Hackage
+-- with an empty exposed-modules list, which cabal treats as an
+-- unbuildable library and refuses to solve under GHC 9.14.1 ). The
+-- codegen service has never used forms or DB persistence -- only
+-- routing, TH sugar, JSON handling, all of which live in yesod-core.
+-- Yesod.Core re-exports ToJSON / Value / object / .= from aeson, so
+-- no separate aeson import is needed here.
+import Yesod.Core
 import Prelude
-import Data.Aeson()
 import qualified Data.Text as T
 import Network.Wai.Handler.Warp
 

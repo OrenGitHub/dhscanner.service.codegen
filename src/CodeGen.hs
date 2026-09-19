@@ -595,11 +595,57 @@ codeGenExpLambda e = do { insertLambdaCallable e; codeGenExpLambda' e }
 beginScope = do { ctx <- get; put $ ctx { symbolTable = SymbolTable.beginScope (symbolTable ctx) } }
 endScope   = do { ctx <- get; put $ ctx { symbolTable = SymbolTable.endScope   (symbolTable ctx) } }
 
+-- The parser-inserted sentinel whose presence in a callable body means
+-- `ensureCallableBodyEndsWithReturn` ( in TsParserActions.hs ) appended
+-- a two-stmt trailer -- a marker call to
+-- `<dhscanner-instrumentation>[fallthrough_return_null]` followed by
+-- `return null` -- to a body that did not already end with an explicit
+-- `StmtReturn`. By construction this name is syntactically illegal as a
+-- user-written TS identifier ( `<>` and `[]` inside the ident ), so
+-- finding the call anywhere in the top-level stmts is a sufficient
+-- signal to shave two stmts off the source-level count.
+fallthroughReturnNullMarkerCallee :: String
+fallthroughReturnNullMarkerCallee = "<dhscanner-instrumentation>[fallthrough_return_null]"
+
+-- Recognises the parser's fall-through marker at a single stmt : an
+-- `Ast.StmtExp` wrapping an `Ast.ExpCall` whose callee is a bare
+-- `Ast.VarSimple` naming the marker.
+isFallthroughReturnNullMarkerStmt :: Ast.Stmt -> Bool
+isFallthroughReturnNullMarkerStmt (Ast.StmtExp (Ast.ExpCall (Ast.ExpCallContent (Ast.ExpVar (Ast.ExpVarContent (Ast.VarSimple (Ast.VarSimpleContent v)))) _ _))) = Token.content (Token.getVarNameToken v) == fallthroughReturnNullMarkerCallee
+isFallthroughReturnNullMarkerStmt _ = False
+
+-- Body-level predicate : did the parser's fall-through instrumentation
+-- kick in for this callable ? The check is position-agnostic on purpose
+-- ( see `fallthroughReturnNullMarkerCallee` ) -- any occurrence in the
+-- top-level stmts is enough.
+returnNullWasInstrumentedForFallthrough :: [ Ast.Stmt ] -> Bool
+returnNullWasInstrumentedForFallthrough = any isFallthroughReturnNullMarkerStmt
+
+-- Source-level `[ Ast.Stmt ]` length, corrected for the parser's
+-- fall-through instrumentation. When the marker is present the raw
+-- length is inflated by exactly 2 ( marker + `return null` ) ; we
+-- subtract those here so the count stored in bitcode / kbgen / KB
+-- facts stays source-truthful. Callable bodies receive at most one
+-- such trailer ( `ensureCallableBodyEndsWithReturn` runs exactly once
+-- per callable during parsing ), so the subtraction is bounded.
+numSourceStmts :: [ Ast.Stmt ] -> Word
+numSourceStmts [] = 0
+numSourceStmts [_] = 1
+numSourceStmts stmts = numSourceStmts' (returnNullWasInstrumentedForFallthrough stmts) (length stmts)
+
+numSourceStmts' :: Bool -> Int -> Word
+numSourceStmts' True  n = fromIntegral (n - 2)
+numSourceStmts' False n = fromIntegral n
+
 handleLambda :: Ast.ExpLambdaContent -> CodeGenContext Callable
 handleLambda lambda = do
     paramDeclsCfg <- codeGenLambdaParams lambda
     lambdaBodyCfg <- codeGenStmts (Ast.expLambdaBody lambda)
-    return $ lambdaToCallable (Cfg.concat paramDeclsCfg lambdaBodyCfg) (Ast.expLambdaLocation lambda)
+    let srcLen = numSourceStmts (Ast.expLambdaBody lambda)
+    return $ lambdaToCallable
+        (Cfg.concat paramDeclsCfg lambdaBodyCfg)
+        (Ast.expLambdaLocation lambda)
+        srcLen
 
 handleLambdaCallable :: Ast.ExpLambdaContent -> CodeGenContext Callable
 handleLambdaCallable lambda = do { beginScope; callable <- handleLambda lambda; endScope; return callable }
@@ -1079,7 +1125,8 @@ scriptToCallable = (Callable.Script .) . Callable.ScriptContent
 
 decFuncToCallable :: Ast.StmtFuncContent -> Cfg -> [ Callable.Annotation ] -> Callable
 decFuncToCallable stmtFunc cfg annotations = let
-    content' = Callable.FunctionContent (Ast.stmtFuncName stmtFunc) cfg annotations (Ast.stmtFuncLocation stmtFunc)
+    srcLen = numSourceStmts (Ast.stmtFuncBody stmtFunc)
+    content' = Callable.FunctionContent (Ast.stmtFuncName stmtFunc) cfg annotations (Ast.stmtFuncLocation stmtFunc) srcLen
     in Callable.Function content'
 
 fqnify :: SymbolTable -> [ Token.SuperName ] -> [ Callable.HostingClassSuper ]
@@ -1098,10 +1145,17 @@ stmtMethodToCallable stmtMethod symbolTable' cfg = let
     hostingClassSupers' = fqnify symbolTable' (Ast.hostingClassSupers stmtMethod)
     stmtMethodName' = Ast.stmtMethodName stmtMethod
     location' = Ast.stmtMethodLocation stmtMethod
-    content' = Callable.MethodContent stmtMethodName' hostingClassName' hostingClassSupers' cfg location'
+    srcLen = numSourceStmts (Ast.stmtMethodBody stmtMethod)
+    content' = Callable.MethodContent stmtMethodName' hostingClassName' hostingClassSupers' cfg location' srcLen
     in Callable.Method content'
 
-lambdaToCallable :: Cfg -> Location -> Callable
-lambdaToCallable cfg location' = let
-    content' = Callable.LambdaContent cfg location'
+-- | Lower a lambda AST node to a bitcode 'Callable.Lambda'.
+--
+-- Unlike 'decFuncToCallable' \/ 'stmtMethodToCallable', this helper does not
+-- receive the AST node itself \-- only the already-lowered 'Cfg' plus the
+-- lambda's source location \-- so we require the caller to pass in the
+-- source-level @[ Ast.Stmt ]@ body length explicitly.
+lambdaToCallable :: Cfg -> Location -> Word -> Callable
+lambdaToCallable cfg location' srcLen = let
+    content' = Callable.LambdaContent cfg location' srcLen
     in Callable.Lambda content'
