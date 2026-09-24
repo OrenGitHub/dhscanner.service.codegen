@@ -1,4 +1,4 @@
-cabal-version: 3.0
+cabal-version: 3.12
 name: dhscanner
 version: 0.1.0.0
 
@@ -41,8 +41,8 @@ executable codegen
         base,
         filepath,
         containers,
-        dhscanner-ast >= 1.2.0,
-        dhscanner-bitcode >= 2.0.0,
+        dhscanner-ast >= 1.3,
+        dhscanner-bitcode >= 2.1,
         yesod-core,
         http-types,
         fast-logger,
@@ -62,4 +62,4 @@ executable codegen
 
     ghc-options: -Wall -threaded -Werror=missing-fields -O2
 
-    default-language: Haskell2010
+    default-language: GHC2024

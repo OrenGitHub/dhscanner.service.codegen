@@ -8,7 +8,6 @@ WORKDIR /codegen
 # single-RUN merge , 3x retry loop , snapshot.debian.org pin ). Bookworm
 # has an independent, currently-consistent apt path.
 COPY dhscanner.cabal dhscanner.cabal
-COPY cabal.project cabal.project
 RUN cabal update
 RUN cabal build --only-dependencies
 COPY src src
