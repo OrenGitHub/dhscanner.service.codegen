@@ -127,18 +127,21 @@ insertEmptyClass name = do
 codeGenStmtMethodSingle :: Ast.StmtMethodContent -> CodeGenContext Cfg
 codeGenStmtMethodSingle stmtMethod = do
     insertEmptyClass (Ast.hostingClassName stmtMethod)
+    (annotations, annotationsCfg) <- codeGenAnnotations (Ast.stmtMethodAnnotations stmtMethod)
     beginScope
     params' <- codeGenParams (Ast.stmtMethodParams stmtMethod)
     body <- codeGenStmts (Ast.stmtMethodBody stmtMethod)
     endScope
     ctx <- get
     let symbolTable' = symbolTable ctx
-    let callables' = (stmtMethodToCallable stmtMethod symbolTable' (Cfg.concat params' body)) : (callables ctx)
+    let cfg = Cfg.concat annotationsCfg (Cfg.concat params' body)
+    let callables' = (stmtMethodToCallable stmtMethod symbolTable' cfg annotations) : (callables ctx)
     put (ctx { callables = callables' })
     return Cfg.Empty
 
 codeGenStmtMethod :: Ast.StmtMethodContent -> CodeGenContext ()
 codeGenStmtMethod stmtMethod = do
+    (annotations, annotationsCfg) <- codeGenAnnotations (Ast.stmtMethodAnnotations stmtMethod)
     beginScope
     params' <- codeGenParams (Ast.stmtMethodParams stmtMethod)
     body <- codeGenStmts (Ast.stmtMethodBody stmtMethod)
@@ -156,8 +159,8 @@ codeGenStmtMethod stmtMethod = do
     let location' = Ast.stmtMethodLocation stmtMethod
     let nop = Bitcode.Instruction location' Bitcode.Nop
     let entrypoint = Cfg.Normal (Cfg.atom (Cfg.Node nop))
-    let cfg = Cfg.concat entrypoint (Cfg.concat params' body)
-    let callables' = stmtMethodToCallable stmtMethod symbolTable' cfg : callables ctx
+    let cfg = Cfg.concat entrypoint (Cfg.concat annotationsCfg (Cfg.concat params' body))
+    let callables' = stmtMethodToCallable stmtMethod symbolTable' cfg annotations : callables ctx
     put (ctx { callables = callables', symbolTable = symbolTable'' })
 
 codeGenStmts :: [ Ast.Stmt ] -> CodeGenContext Cfg
@@ -243,32 +246,34 @@ assumeIfNotTakenGen cond loc = let
     instruction = Bitcode.Instruction loc content'
     in Cfg.atom (Cfg.Node instruction)
 
-codeGenAnnotations :: [ Ast.Exp ] -> CodeGenContext [ Callable.Annotation ]
-codeGenAnnotations = mapM codeGenAnnotation
+-- | Annotations are lowered as ordinary calls at their own location, so the
+-- KB recovers an annotation's fqn / args through @kb_call_resolved@ /
+-- @kb_arg_i_for_call@ on the same location that @kb_callable_has_annotation@
+-- points at. Call this /before/ 'beginScope' so annotation names resolve
+-- against the enclosing scope ( imports ), not the callable's params.
+codeGenAnnotations :: [ Ast.Exp ] -> CodeGenContext ( [ Callable.Annotation ], Cfg )
+codeGenAnnotations exps = do
+    generated <- mapM codeGenAnnotation (mapMaybe annotationCall exps)
+    return (map fst generated, foldl' Cfg.concat Cfg.Empty (map snd generated))
 
-stringOrNothing :: Ast.Exp -> Maybe Token.ConstStr
-stringOrNothing (Ast.ExpStr (Ast.ExpStrContent s)) = Just s
-stringOrNothing _ = Nothing
+annotationCall :: Ast.Exp -> Maybe Ast.ExpCallContent
+annotationCall (Ast.ExpCall call) = Just call
+annotationCall _ = Nothing
 
-keepStrings :: [ Ast.Exp ] -> [ Token.ConstStr ]
-keepStrings = mapMaybe stringOrNothing
-
-codeGenAnnotation :: Ast.Exp -> CodeGenContext Callable.Annotation
-codeGenAnnotation exp = do
-    -- exp' <- codeGenExp exp
-    -- let fqn = ActualType.toFqn (inferredActualType exp')
-    let args = case exp of { (Ast.ExpCall (Ast.ExpCallContent _ a _)) -> a; _ -> [] }
-    return $ Callable.Annotation "FIXME-ANNOTATIONS" (map Token.constStrValue (keepStrings args))
+codeGenAnnotation :: Ast.ExpCallContent -> CodeGenContext ( Callable.Annotation, Cfg )
+codeGenAnnotation call = do
+    generated <- codeGenExpCall call
+    return (Callable.Annotation (Ast.expCallLocation call), generatedCfg generated)
 
 codeGenStmtFunc :: Ast.StmtFuncContent -> CodeGenContext Cfg
 codeGenStmtFunc stmtFunc = do
-    annotations <- codeGenAnnotations (Ast.stmtFuncAnnotations stmtFunc)
+    (annotations, annotationsCfg) <- codeGenAnnotations (Ast.stmtFuncAnnotations stmtFunc)
     beginScope
     params' <- codeGenParams (Ast.stmtFuncParams stmtFunc)
     body <- codeGenStmts (Ast.stmtFuncBody stmtFunc)
     endScope
     ctx <- get
-    let callable = decFuncToCallable stmtFunc (Cfg.concat params' body) annotations
+    let callable = decFuncToCallable stmtFunc (Cfg.concat annotationsCfg (Cfg.concat params' body)) annotations
     let callables' = callable : callables ctx
     let funcName' = Token.VarName $ Token.getFuncNameToken (Ast.stmtFuncName stmtFunc)
     let r = Ast.stmtFuncReturnType stmtFunc
@@ -1139,14 +1144,14 @@ fqnify' symbolTable' superName = let
         Nothing -> Callable.HostingClassSuper superName Nothing
         Just actualType' -> Callable.HostingClassSuper superName (Just (toFqn actualType'))
 
-stmtMethodToCallable :: Ast.StmtMethodContent -> SymbolTable -> Cfg -> Callable
-stmtMethodToCallable stmtMethod symbolTable' cfg = let
+stmtMethodToCallable :: Ast.StmtMethodContent -> SymbolTable -> Cfg -> [ Callable.Annotation ] -> Callable
+stmtMethodToCallable stmtMethod symbolTable' cfg annotations = let
     hostingClassName' = Ast.hostingClassName stmtMethod
     hostingClassSupers' = fqnify symbolTable' (Ast.hostingClassSupers stmtMethod)
     stmtMethodName' = Ast.stmtMethodName stmtMethod
     location' = Ast.stmtMethodLocation stmtMethod
     srcLen = numSourceStmts (Ast.stmtMethodBody stmtMethod)
-    content' = Callable.MethodContent stmtMethodName' hostingClassName' hostingClassSupers' cfg location' srcLen
+    content' = Callable.MethodContent stmtMethodName' hostingClassName' hostingClassSupers' cfg annotations location' srcLen
     in Callable.Method content'
 
 -- | Lower a lambda AST node to a bitcode 'Callable.Lambda'.
