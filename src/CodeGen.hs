@@ -561,8 +561,15 @@ codeGenExpAssign' (Ast.VarSubscript v) e = codeGenExpAssignToSubscriptVar v e
 codeGenExpAssign :: Ast.ExpAssignContent -> CodeGenContext GeneratedExp
 codeGenExpAssign e = codeGenExpAssign' (Ast.expAssignLhs e) (Ast.expAssignRhs e)
 
+-- | keep the keyword name next to its value ( kbgen turns it into
+-- `kb_keyword_arg_for_call` ). nameless ones ( python `**kwargs` )
+-- stay plain values
 codeGenExpKwArg :: Ast.ExpKwArgContent -> CodeGenContext GeneratedExp
-codeGenExpKwArg = codeGenExp . Ast.expKwArgValue
+codeGenExpKwArg expKwArg = do
+    value <- codeGenExp (Ast.expKwArgValue expKwArg)
+    return $ case Ast.expKwArgName expKwArg of
+        "" -> value
+        name -> value { generatedValue = Bitcode.KeywordArgCtor (Bitcode.KeywordArgVariable name (generatedValue value)) }
 
 codeGenExpBinop :: Ast.ExpBinopContent -> CodeGenContext GeneratedExp
 codeGenExpBinop expBinop = do
