@@ -127,6 +127,7 @@ insertEmptyClass name = do
 codeGenStmtMethodSingle :: Ast.StmtMethodContent -> CodeGenContext Cfg
 codeGenStmtMethodSingle stmtMethod = do
     insertEmptyClass (Ast.hostingClassName stmtMethod)
+    (classAnnotations, classAnnotationsCfg) <- codeGenAnnotations (Ast.hostingClassAnnotations stmtMethod)
     (annotations, annotationsCfg) <- codeGenAnnotations (Ast.stmtMethodAnnotations stmtMethod)
     beginScope
     params' <- codeGenParams (Ast.stmtMethodParams stmtMethod)
@@ -134,13 +135,14 @@ codeGenStmtMethodSingle stmtMethod = do
     endScope
     ctx <- get
     let symbolTable' = symbolTable ctx
-    let cfg = Cfg.concat annotationsCfg (Cfg.concat params' body)
-    let callables' = (stmtMethodToCallable stmtMethod symbolTable' cfg annotations) : (callables ctx)
+    let cfg = Cfg.concat classAnnotationsCfg (Cfg.concat annotationsCfg (Cfg.concat params' body))
+    let callables' = (stmtMethodToCallable stmtMethod symbolTable' cfg annotations classAnnotations) : (callables ctx)
     put (ctx { callables = callables' })
     return Cfg.Empty
 
 codeGenStmtMethod :: Ast.StmtMethodContent -> CodeGenContext ()
 codeGenStmtMethod stmtMethod = do
+    (classAnnotations, classAnnotationsCfg) <- codeGenAnnotations (Ast.hostingClassAnnotations stmtMethod)
     (annotations, annotationsCfg) <- codeGenAnnotations (Ast.stmtMethodAnnotations stmtMethod)
     beginScope
     params' <- codeGenParams (Ast.stmtMethodParams stmtMethod)
@@ -159,8 +161,8 @@ codeGenStmtMethod stmtMethod = do
     let location' = Ast.stmtMethodLocation stmtMethod
     let nop = Bitcode.Instruction location' Bitcode.Nop
     let entrypoint = Cfg.Normal (Cfg.atom (Cfg.Node nop))
-    let cfg = Cfg.concat entrypoint (Cfg.concat annotationsCfg (Cfg.concat params' body))
-    let callables' = stmtMethodToCallable stmtMethod symbolTable' cfg annotations : callables ctx
+    let cfg = Cfg.concat entrypoint (Cfg.concat classAnnotationsCfg (Cfg.concat annotationsCfg (Cfg.concat params' body)))
+    let callables' = stmtMethodToCallable stmtMethod symbolTable' cfg annotations classAnnotations : callables ctx
     put (ctx { callables = callables', symbolTable = symbolTable'' })
 
 codeGenStmts :: [ Ast.Stmt ] -> CodeGenContext Cfg
@@ -251,6 +253,10 @@ assumeIfNotTakenGen cond loc = let
 -- @kb_arg_i_for_call@ on the same location that @kb_callable_has_annotation@
 -- points at. Call this /before/ 'beginScope' so annotation names resolve
 -- against the enclosing scope ( imports ), not the callable's params.
+--
+-- A method's hosting-class annotations are lowered into every method of
+-- that class, so each method's 'Cfg' carries the calls the KB needs to
+-- resolve them.
 codeGenAnnotations :: [ Ast.Exp ] -> CodeGenContext ( [ Callable.Annotation ], Cfg )
 codeGenAnnotations exps = do
     generated <- mapM codeGenAnnotation (mapMaybe annotationCall exps)
@@ -1144,14 +1150,14 @@ fqnify' symbolTable' superName = let
         Nothing -> Callable.HostingClassSuper superName Nothing
         Just actualType' -> Callable.HostingClassSuper superName (Just (toFqn actualType'))
 
-stmtMethodToCallable :: Ast.StmtMethodContent -> SymbolTable -> Cfg -> [ Callable.Annotation ] -> Callable
-stmtMethodToCallable stmtMethod symbolTable' cfg annotations = let
+stmtMethodToCallable :: Ast.StmtMethodContent -> SymbolTable -> Cfg -> [ Callable.Annotation ] -> [ Callable.Annotation ] -> Callable
+stmtMethodToCallable stmtMethod symbolTable' cfg annotations classAnnotations = let
     hostingClassName' = Ast.hostingClassName stmtMethod
     hostingClassSupers' = fqnify symbolTable' (Ast.hostingClassSupers stmtMethod)
     stmtMethodName' = Ast.stmtMethodName stmtMethod
     location' = Ast.stmtMethodLocation stmtMethod
     srcLen = numSourceStmts (Ast.stmtMethodBody stmtMethod)
-    content' = Callable.MethodContent stmtMethodName' hostingClassName' hostingClassSupers' cfg annotations location' srcLen
+    content' = Callable.MethodContent stmtMethodName' hostingClassName' hostingClassSupers' classAnnotations cfg annotations location' srcLen
     in Callable.Method content'
 
 -- | Lower a lambda AST node to a bitcode 'Callable.Lambda'.
