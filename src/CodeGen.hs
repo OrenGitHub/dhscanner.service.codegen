@@ -685,8 +685,9 @@ codeGenParams' _ [] = return []
 codeGenParams' i (p:ps) = do { cfg <- codeGenParam i p; cfgs <- codeGenParams' (i+1) ps; return (cfg:cfgs) }
 
 -- | The nominal type is represented as an Ast.Var
-codeGenParam' :: Word -> Token.ParamName -> Ast.Var -> CodeGenContext Cfg
-codeGenParam' i name nominalType = do
+codeGenParam' :: Word -> Ast.Param -> Ast.Var -> CodeGenContext Cfg
+codeGenParam' i p nominalType = do
+    let name = Ast.paramName p
     ctx <- get
     nominalType' <- codeGenVar nominalType
     let actualType = inferredActualType nominalType'
@@ -694,7 +695,7 @@ codeGenParam' i name nominalType = do
     let location' = Token.getParamNameLocation name
     let paramVar = Bitcode.ParamVariable fqn i name
     let v = Bitcode.ParamVariableCtor paramVar
-    let paramDecl = Bitcode.ParamDecl $ Bitcode.ParamDeclContent paramVar
+    let paramDecl = Bitcode.ParamDecl $ Bitcode.ParamDeclContent paramVar (paramAnnotations p)
     let instruction = Bitcode.Instruction location' paramDecl
     put (ctx { symbolTable = SymbolTable.insertParam name v actualType (symbolTable ctx) })
     return (Cfg.Normal (Cfg.atom (Cfg.Node instruction)))
@@ -702,7 +703,7 @@ codeGenParam' i name nominalType = do
 mkParamDeclCfg :: Word -> Ast.Param -> Fqn -> Token.ParamName -> Cfg
 mkParamDeclCfg i p fqn name = let
     paramVar = Bitcode.ParamVariable fqn i (Ast.paramName p)
-    paramDecl = Bitcode.ParamDecl (Bitcode.ParamDeclContent paramVar)
+    paramDecl = Bitcode.ParamDecl (Bitcode.ParamDeclContent paramVar (paramAnnotations p))
     instruction = Bitcode.Instruction (Token.getParamNameLocation name) paramDecl
     in Cfg.Normal (Cfg.atom (Cfg.Node instruction))
 
@@ -735,10 +736,20 @@ codeGenParam''' False = codeGenParamNonSelf
 codeGenParam'' :: Word -> Ast.Param -> CodeGenContext Cfg
 codeGenParam'' i p = codeGenParam''' (Token.content (Token.getParamNameToken (Ast.paramName p)) == "self") i p
 
+-- | the param's annotations ( java @RequestParam, ... ) are lowered as
+-- calls right before its decl, like method annotations ; the decl
+-- points at them by location ( see 'paramAnnotations' )
 codeGenParam :: Word -> Ast.Param -> CodeGenContext Cfg
-codeGenParam paramSerialIdx' param = case Ast.paramNominalType param of
-    Nothing -> codeGenParam'' paramSerialIdx' param
-    Just nominalType -> codeGenParam' paramSerialIdx' (Ast.paramName param) nominalType
+codeGenParam paramSerialIdx' param = do
+    (_, annotationsCfg) <- codeGenAnnotations (Ast.paramAnnotations param)
+    paramCfg <- case Ast.paramNominalType param of
+        Nothing -> codeGenParam'' paramSerialIdx' param
+        Just nominalType -> codeGenParam' paramSerialIdx' param nominalType
+    return (Cfg.concat annotationsCfg paramCfg)
+
+-- | same locations 'codeGenAnnotations' lowers the calls at
+paramAnnotations :: Ast.Param -> [ Bitcode.Annotation ]
+paramAnnotations p = [ Bitcode.Annotation (Ast.expCallLocation c) | c <- mapMaybe annotationCall (Ast.paramAnnotations p) ]
 
 -- |
 -- * generate an indicative variable (via location).
