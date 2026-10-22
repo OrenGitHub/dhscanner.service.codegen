@@ -257,7 +257,7 @@ assumeIfNotTakenGen cond loc = let
 -- A method's hosting-class annotations are lowered into every method of
 -- that class, so each method's 'Cfg' carries the calls the KB needs to
 -- resolve them.
-codeGenAnnotations :: [ Ast.Exp ] -> CodeGenContext ( [ Callable.Annotation ], Cfg )
+codeGenAnnotations :: [ Ast.Exp ] -> CodeGenContext ( [ Bitcode.Annotation ], Cfg )
 codeGenAnnotations exps = do
     generated <- mapM codeGenAnnotation (mapMaybe annotationCall exps)
     return (map fst generated, foldl' Cfg.concat Cfg.Empty (map snd generated))
@@ -266,10 +266,10 @@ annotationCall :: Ast.Exp -> Maybe Ast.ExpCallContent
 annotationCall (Ast.ExpCall call) = Just call
 annotationCall _ = Nothing
 
-codeGenAnnotation :: Ast.ExpCallContent -> CodeGenContext ( Callable.Annotation, Cfg )
+codeGenAnnotation :: Ast.ExpCallContent -> CodeGenContext ( Bitcode.Annotation, Cfg )
 codeGenAnnotation call = do
     generated <- codeGenExpCall call
-    return (Callable.Annotation (Ast.expCallLocation call), generatedCfg generated)
+    return (Bitcode.Annotation (Ast.expCallLocation call), generatedCfg generated)
 
 codeGenStmtFunc :: Ast.StmtFuncContent -> CodeGenContext Cfg
 codeGenStmtFunc stmtFunc = do
@@ -1152,7 +1152,7 @@ codeGenExpNull (Ast.ExpNullContent constNull) = let
 scriptToCallable :: FilePath -> Cfg -> Callable
 scriptToCallable = (Callable.Script .) . Callable.ScriptContent
 
-decFuncToCallable :: Ast.StmtFuncContent -> Cfg -> [ Callable.Annotation ] -> Callable
+decFuncToCallable :: Ast.StmtFuncContent -> Cfg -> [ Bitcode.Annotation ] -> Callable
 decFuncToCallable stmtFunc cfg annotations = let
     srcLen = numSourceStmts (Ast.stmtFuncBody stmtFunc)
     content' = Callable.FunctionContent (Ast.stmtFuncName stmtFunc) cfg annotations (Ast.stmtFuncLocation stmtFunc) srcLen
@@ -1168,7 +1168,7 @@ fqnify' symbolTable' superName = let
         Nothing -> Callable.HostingClassSuper superName Nothing
         Just actualType' -> Callable.HostingClassSuper superName (Just (toFqn actualType'))
 
-stmtMethodToCallable :: Ast.StmtMethodContent -> SymbolTable -> Cfg -> [ Callable.Annotation ] -> [ Callable.Annotation ] -> Callable
+stmtMethodToCallable :: Ast.StmtMethodContent -> SymbolTable -> Cfg -> [ Bitcode.Annotation ] -> [ Bitcode.Annotation ] -> Callable
 stmtMethodToCallable stmtMethod symbolTable' cfg annotations classAnnotations = let
     hostingClassName' = Ast.hostingClassName stmtMethod
     hostingClassSupers' = fqnify symbolTable' (Ast.hostingClassSupers stmtMethod)
