@@ -106,8 +106,19 @@ insertSelf name = do
 codeGenMethods :: Ast.Methods -> CodeGenContext ()
 codeGenMethods = codeGenMethods' . Data.Map.elems . Ast.actualMethods
 
+-- | lift the data members into the class scope, so every method
+-- ( codegen'd inside that scope ) sees them, and its params shadow them.
+-- the type comes from the initializer when there is one ( like 'codeGenStmtVardecInit' ),
+-- otherwise from the nominal type. the initializer's cfg is dropped - no callable hosts it
 codeGenDataMembers :: Ast.DataMembers -> CodeGenContext ()
-codeGenDataMembers _ = return () -- TODO: implement me ...
+codeGenDataMembers = mapM_ codeGenDataMember . Data.Map.elems . Ast.actualDataMembers
+
+codeGenDataMember :: Ast.DataMember -> CodeGenContext ()
+codeGenDataMember d = let name = Token.VarName (Token.getMemberNameToken (Ast.dataMemberName d)) in
+    case (Ast.dataMemberInitValue d, Ast.dataMemberNominalType d) of
+        (Just init, _) -> void (insertVarWithActualTypeToSymbolTable name . inferredActualType =<< codeGenExp init)
+        (Nothing, Just nominalType) -> insertVarToSymbolTable name nominalType
+        (Nothing, Nothing) -> insertVarNoNominalTypeToSymbolTable name
 
 codeGenMethods' :: [ Ast.StmtMethodContent ] -> CodeGenContext ()
 codeGenMethods' = mapM_ codeGenStmtMethod
