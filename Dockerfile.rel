@@ -1,4 +1,3 @@
-FROM ubuntu
-COPY codegen.elf.x64 .
-RUN chmod +x codegen.elf.x64
-CMD ["./codegen.elf.x64"]
+FROM scratch
+COPY --chmod=755 codegen.elf.x64 /codegen.elf.x64
+CMD ["/codegen.elf.x64"]
