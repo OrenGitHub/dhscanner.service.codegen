@@ -84,6 +84,9 @@ codeGenRoot (Ast.Root filename' stmts) = do
 
 codeGenStmtClass :: Ast.StmtClassContent -> CodeGenContext Cfg
 codeGenStmtClass stmtClass = do
+    -- the class name binds in the enclosing scope, so a later class
+    -- in the same file resolves it as a super ( runner #126, G2b )
+    insertEmptyClass (Ast.stmtClassName stmtClass)
     beginScope
     insertSelf (Ast.stmtClassName stmtClass)
     codeGenDataMembers (Ast.stmtClassDataMembers stmtClass)
