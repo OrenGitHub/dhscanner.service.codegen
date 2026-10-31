@@ -969,7 +969,15 @@ codeGenExpCallFielded :: ActualType -> Token.FieldName -> Bitcode.Variable -> Cf
 codeGenExpCallFielded (ActualType.ClassInstance c) f v = codeGenExpCallClassFielded v f c
 codeGenExpCallFielded (ActualType.UntypedNamedParam p) f v = codeGenExpCallUntypedNamedParamFielded v f p
 codeGenExpCallFielded (ActualType.FirstPartyDirImport d) f v = codeGenExpCallFirstPartyDirImportFielded v f d
+codeGenExpCallFielded (ActualType.ClassName (ActualType.ClassNameContent c)) f v = codeGenExpCallClassNameFielded v f c
 codeGenExpCallFielded t f v = codeGenExpCallDefault (ActualType.FieldedAccess t f) v
+
+-- | a dotted call on a class name ( @StatsView.as_view()@ ) is a method of
+-- that class, like @self.f()@ is a method of the hosting class ( runner #131 )
+codeGenExpCallClassNameFielded :: Bitcode.Variable -> Token.FieldName -> Token.ClassName -> Cfg -> [ GeneratedExp ] -> Location -> GeneratedExp
+codeGenExpCallClassNameFielded v (Token.FieldName (Token.Named method _)) c cfg args loc = let
+    actualType = ActualType.CallMethodOfClass loc method c
+    in codeGenExpCallMethod (setNewFqnToVariable v (ActualType.toFqn actualType)) cfg args loc actualType
 
 setNewFqnToTmpVariable :: Bitcode.TmpVariable -> Fqn -> Bitcode.Variable
 setNewFqnToTmpVariable v newFqn = Bitcode.TmpVariableCtor (v { Bitcode.tmpVariableFqn = newFqn })
