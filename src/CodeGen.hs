@@ -76,6 +76,7 @@ codeGen ast = Callables (callables (execState (codeGenRoot ast) initCodeGenState
 codeGenRoot :: Ast.Root -> CodeGenContext ()
 codeGenRoot (Ast.Root filename' stmts) = do
     beginScope
+    hoistFuncs stmts
     scriptCfg <- codeGenStmts stmts -- script part
     endScope
     ctx <- get; -- function + lambda callables
@@ -203,7 +204,7 @@ codeGenStmt (Ast.StmtMethod stmtMethod) = codeGenStmtMethodSingle stmtMethod
 codeGenStmt _                           = return Cfg.Empty
 
 codeGenStmtTry :: Ast.StmtTryContent -> CodeGenContext Cfg
-codeGenStmtTry = codeGenStmts . Ast.stmtTryPart
+codeGenStmtTry t = codeGenStmts (Ast.stmtTryPart t ++ Ast.stmtCatchPart t) -- catch part in sequence : enough for reachability
 
 codeGenStmtExp :: Ast.Exp -> CodeGenContext Cfg
 codeGenStmtExp = fmap generatedCfg . codeGenExp
@@ -284,6 +285,20 @@ codeGenAnnotation :: Ast.ExpCallContent -> CodeGenContext ( Bitcode.Annotation, 
 codeGenAnnotation call = do
     generated <- codeGenExpCall call
     return (Bitcode.Annotation (Ast.expCallLocation call), generatedCfg generated)
+
+-- | bind every top level function name before generating any body,
+-- so a call placed above the @def@ ( or inside it ) resolves too.
+-- 'codeGenStmtFunc' re binds the name later, with its return type.
+hoistFuncs :: [ Ast.Stmt ] -> CodeGenContext ()
+hoistFuncs stmts = mapM_ hoistFunc [ f | Ast.StmtFunc f <- stmts ]
+
+hoistFunc :: Ast.StmtFuncContent -> CodeGenContext ()
+hoistFunc stmtFunc = do
+    ctx <- get
+    let funcName' = Token.VarName $ Token.getFuncNameToken (Ast.stmtFuncName stmtFunc)
+    let funcType = ActualType.Function (ActualType.FunctionContent (Ast.stmtFuncName stmtFunc) (ActualType.Params []) ActualType.Any)
+    let funcVar = Bitcode.SrcVariableCtor $ Bitcode.SrcVariable (ActualType.toFqn funcType) funcName'
+    put (ctx { symbolTable = SymbolTable.insertVar funcName' funcVar funcType (symbolTable ctx) })
 
 codeGenStmtFunc :: Ast.StmtFuncContent -> CodeGenContext Cfg
 codeGenStmtFunc stmtFunc = do
@@ -1000,8 +1015,19 @@ codeGenExpCall1stPartyFunc f func v cfg args loc = let
     v' = setNewFqnToVariable v newFqn
     in codeGenExpCallDefault actualType v' cfg args loc
 
+-- | a call to a function defined in the same file : the same fact as a
+-- call to an imported 1st party function, the file is the def's file
+-- ( it used to be 'Fqn.Unknown' ). The output keeps the return type.
+codeGenExpCallSameFileFunc :: ActualType.FunctionContent -> Bitcode.Variable -> Cfg -> [ GeneratedExp ] -> Location -> GeneratedExp
+codeGenExpCallSameFileFunc f v cfg args loc = let
+    name = Token.getFuncNameToken (ActualType.funcName f)
+    file = Location.filename (Token.getFuncNameLocation (ActualType.funcName f))
+    newFqn = ActualType.toFqn (ActualType.CallFuncFromImportedFile loc (Token.content name) file)
+    in codeGenExpCallDefault (ActualType.Function f) (setNewFqnToVariable v newFqn) cfg args loc
+
 codeGenExpCall'' :: ActualType -> Bitcode.Variable -> Cfg -> [ GeneratedExp ] -> Location -> GeneratedExp
 codeGenExpCall'' (ActualType.FieldedAccess t f) = codeGenExpCallFielded t f
+codeGenExpCall'' (ActualType.Function f) = codeGenExpCallSameFileFunc f
 codeGenExpCall'' (ActualType.FirstPartyImport (ActualType.FirstPartyImportContent f (Just i))) = codeGenExpCall1stPartyFunc f i
 codeGenExpCall'' calleeActualType = codeGenExpCallDefault calleeActualType
 
