@@ -1211,10 +1211,34 @@ fqnify = Data.List.map . fqnify'
 
 fqnify' :: SymbolTable -> Token.SuperName -> Callable.HostingClassSuper
 fqnify' symbolTable' superName = let
-    actualType = SymbolTable.lookupSuperType superName symbolTable'
+    actualType = case SymbolTable.lookupSuperType superName symbolTable' of
+        Nothing -> dottedSuperType symbolTable' superName
+        found -> found
     in case actualType of
         Nothing -> Callable.HostingClassSuper superName Nothing
         Just actualType' -> Callable.HostingClassSuper superName (Just (toFqn actualType'))
+
+-- | a dotted super ( ruby @MiniSql::ActiveRecordPostgres::Connection@ ) that
+-- has no binding of its own resolves through its first part : a 3rd party
+-- first part ( the ruby front imports a constant no scanned file defines )
+-- makes the whole name 3rd party, @MiniSql.ActiveRecordPostgres.Connection@ ;
+-- any other first part is the super, as before ( runner #146 )
+dottedSuperType :: SymbolTable -> Token.SuperName -> Maybe ActualType
+dottedSuperType symbolTable' superName = case splitDots (Token.content token) of
+    (first : rest@(_ : _)) -> case SymbolTable.lookupSuperType (Token.SuperName (token { Token.content = first })) symbolTable' of
+        Just (ActualType.ThirdPartyImport (ActualType.ThirdPartyImportContent p parts Nothing _)) -> Just (thirdParty p parts rest)
+        Just (ActualType.ThirdPartyImport (ActualType.ThirdPartyImportContent p parts (Just name) _)) -> Just (thirdParty p (parts ++ [name]) rest)
+        found -> found
+    _ -> Nothing
+    where
+        token = Token.getSuperNameToken superName
+        thirdParty p parts rest = ActualType.ThirdPartyImport (ActualType.ThirdPartyImportContent p (parts ++ rest) Nothing Nothing)
+
+-- | @"A.B.C"@ -> @[ "A", "B", "C" ]@
+splitDots :: String -> [ String ]
+splitDots name = case break (== '.') name of
+    (part, []) -> [ part ]
+    (part, _ : rest) -> part : splitDots rest
 
 stmtMethodToCallable :: Ast.StmtMethodContent -> SymbolTable -> Cfg -> [ Bitcode.Annotation ] -> [ Bitcode.Annotation ] -> Callable
 stmtMethodToCallable stmtMethod symbolTable' cfg annotations classAnnotations = let
