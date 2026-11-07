@@ -1221,14 +1221,17 @@ fqnify' symbolTable' superName = let
 -- | a dotted super ( ruby @MiniSql::ActiveRecordPostgres::Connection@ ) that
 -- has no binding of its own resolves through its first part : a 3rd party
 -- first part ( the ruby front imports a constant no scanned file defines )
--- makes the whole name 3rd party, @MiniSql.ActiveRecordPostgres.Connection@ ;
--- any other first part is the super, as before ( runner #146 )
+-- makes the whole name 3rd party, @MiniSql.ActiveRecordPostgres.Connection@ ( runner #146 ).
+-- A 1st party first part is no answer : @Admin::StaffController@ is not the
+-- module @Admin@ of whichever file defines it, so the super stays unresolved
+-- ( it was @Admin@ of @app/services/admin/search/list.rb@ ). The ruby front
+-- binds the whole qualified name when a scanned file defines it ( runner #152 ).
 dottedSuperType :: SymbolTable -> Token.SuperName -> Maybe ActualType
 dottedSuperType symbolTable' superName = case splitDots (Token.content token) of
     (first : rest@(_ : _)) -> case SymbolTable.lookupSuperType (Token.SuperName (token { Token.content = first })) symbolTable' of
         Just (ActualType.ThirdPartyImport (ActualType.ThirdPartyImportContent p parts Nothing _)) -> Just (thirdParty p parts rest)
         Just (ActualType.ThirdPartyImport (ActualType.ThirdPartyImportContent p parts (Just name) _)) -> Just (thirdParty p (parts ++ [name]) rest)
-        found -> found
+        _ -> Nothing
     _ -> Nothing
     where
         token = Token.getSuperNameToken superName
