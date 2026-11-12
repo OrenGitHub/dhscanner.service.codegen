@@ -27,21 +27,21 @@ import Prelude hiding ( exp, init )
 import Control.Monad.State.Lazy
 import Data.Functor (void)
 import System.FilePath
+import Data.Set ( Set )
 
 -- general (qualified) imports
 import qualified Data.Map
+import qualified Data.Set
 
-data CodeGenState
-   = CodeGenState
-     {
-         symbolTable :: SymbolTable,
-         returnValue :: Maybe Bitcode.TmpVariable,
-         returnTo :: Maybe Cfg,
-         continueTo :: Maybe Cfg,
-         breakTo :: Maybe Cfg,
-         callables :: [ Callable ]
-     }
-     deriving ( Show )
+data CodeGenState = CodeGenState
+    { symbolTable :: SymbolTable
+    , callables   :: Set Callable
+    , returnTypes :: Set ActualType
+    , returnTo    :: Maybe Cfg
+    , continueTo  :: Maybe Cfg
+    , breakTo     :: Maybe Cfg
+    }
+    deriving ( Show )
 
 -- | Internal use only
 data GeneratedExp
@@ -62,16 +62,16 @@ type CodeGenContext = State CodeGenState
 initCodeGenState :: CodeGenState
 initCodeGenState = CodeGenState {
     symbolTable = emptySymbolTable,
-    returnValue = Nothing,
+    callables = Data.Set.empty,
+    returnTypes = Data.Set.empty,
     returnTo = Nothing,
     continueTo = Nothing,
-    breakTo = Nothing,
-    callables = []
+    breakTo = Nothing
 }
 
 -- | API: generates code packed as a collection of callables
 codeGen :: Ast.Root -> Callables
-codeGen ast = Callables (callables (execState (codeGenRoot ast) initCodeGenState))
+codeGen ast = Callables (Data.Set.toList (callables (execState (codeGenRoot ast) initCodeGenState)))
 
 codeGenRoot :: Ast.Root -> CodeGenContext ()
 codeGenRoot (Ast.Root filename' stmts) = do
@@ -80,20 +80,24 @@ codeGenRoot (Ast.Root filename' stmts) = do
     scriptCfg <- codeGenStmts stmts -- script part
     endScope
     ctx <- get; -- function + lambda callables
-    let callables' = scriptToCallable filename' scriptCfg : callables ctx -- combine
+    let callables' = Data.Set.insert (scriptToCallable filename' scriptCfg) (callables ctx) -- combine
     put $ ctx { callables = callables' } -- write back to state
 
 codeGenStmtClass :: Ast.StmtClassContent -> CodeGenContext Cfg
 codeGenStmtClass stmtClass = do
-    -- the class name binds in the enclosing scope, so a later class
-    -- in the same file resolves it as a super ( runner #126, G2b )
     insertEmptyClass (Ast.stmtClassName stmtClass)
     beginScope
     insertSelf (Ast.stmtClassName stmtClass)
     codeGenDataMembers (Ast.stmtClassDataMembers stmtClass)
-    codeGenMethods (Ast.stmtClassMethods stmtClass)
+    codeGenStmtClassMethodsTwoPasses (Ast.stmtClassMethods stmtClass)
     endScope
     return Cfg.Empty
+
+codeGenStmtClassMethodsTwoPasses :: Ast.Methods -> CodeGenContext ()
+codeGenStmtClassMethodsTwoPasses methods = do
+    firstPass <- get; codeGenMethods methods; secondPass <- get
+    put (firstPass { symbolTable = symbolTable secondPass })
+    codeGenMethods methods
 
 insertSelf :: Token.ClassName -> CodeGenContext ()
 insertSelf name = do
@@ -151,7 +155,7 @@ codeGenStmtMethodSingle stmtMethod = do
     ctx <- get
     let symbolTable' = symbolTable ctx
     let cfg = Cfg.concat classAnnotationsCfg (Cfg.concat annotationsCfg (Cfg.concat params' body))
-    let callables' = (stmtMethodToCallable stmtMethod symbolTable' cfg annotations classAnnotations) : (callables ctx)
+    let callables' = Data.Set.insert (stmtMethodToCallable stmtMethod symbolTable' cfg annotations classAnnotations) (callables ctx)
     put (ctx { callables = callables' })
     return Cfg.Empty
 
@@ -161,6 +165,8 @@ codeGenStmtMethod stmtMethod = do
     (annotations, annotationsCfg) <- codeGenAnnotations (Ast.stmtMethodAnnotations stmtMethod)
     beginScope
     params' <- codeGenParams (Ast.stmtMethodParams stmtMethod)
+    definer <- get
+    resetDefinerFields
     body <- codeGenStmts (Ast.stmtMethodBody stmtMethod)
     endScope
     ctx <- get
@@ -177,8 +183,42 @@ codeGenStmtMethod stmtMethod = do
     let nop = Bitcode.Instruction location' Bitcode.Nop
     let entrypoint = Cfg.Normal (Cfg.atom (Cfg.Node nop))
     let cfg = Cfg.concat entrypoint (Cfg.concat classAnnotationsCfg (Cfg.concat annotationsCfg (Cfg.concat params' body)))
-    let callables' = stmtMethodToCallable stmtMethod symbolTable' cfg annotations classAnnotations : callables ctx
-    put (ctx { callables = callables', symbolTable = symbolTable'' })
+    let callables' = Data.Set.insert (stmtMethodToCallable stmtMethod symbolTable' cfg annotations classAnnotations) (callables ctx)
+    put (ctx { callables = callables', symbolTable = symbolTable'', returnTypes = returnTypes definer })
+    insertMethodOfClass hostingClass (Ast.stmtMethodName stmtMethod) (singleReturnType (returnTypes ctx))
+
+resetDefinerFields :: CodeGenContext ()
+resetDefinerFields = do { ctx <- get; put (ctx { returnTypes = Data.Set.empty }) }
+
+singleReturnType :: Set ActualType -> Maybe ActualType
+singleReturnType = singleReturnType' . Data.Set.toList
+
+-- | a `return e` adds the type of `e` to its definer's return types
+updateReturnType :: ActualType -> CodeGenContext ()
+updateReturnType t = do
+    ctx <- get
+    put (ctx { returnTypes = Data.Set.insert t (returnTypes ctx) })
+
+-- | for now, only a single returned type is supported
+singleReturnType' :: [ ActualType ] -> Maybe ActualType
+singleReturnType' [ t ] = Just t
+singleReturnType' _ = Nothing
+
+-- | a method's name, in the class scope, is a method of that class : a bare
+-- call `m(..)` in a sibling method is `self.m(..)`, a call of a method of
+-- the class ( runner #154 ). A name already in scope wins ( a python module
+-- function `m` called from a method `m` ).
+insertMethodOfClass :: Token.ClassName -> Token.MethodName -> Maybe ActualType -> CodeGenContext ()
+insertMethodOfClass hostingClass methodName returned = do
+    ctx <- get
+    let name = Token.getMethodNameToken methodName
+    let self = ActualType.ClassInstance (ActualType.ClassInstanceContent ActualType.Self hostingClass)
+    let selfFielded = ActualType.FieldedAccess self (Token.FieldName name)
+    let actualType = ActualType.MethodOfClass (ActualType.MethodOfClassContent methodName (ActualType.Params []) hostingClass (fromMaybe ActualType.Any returned))
+    let methodVar = Bitcode.SrcVariableCtor $ Bitcode.SrcVariable (ActualType.toFqn selfFielded) (Token.VarName name)
+    if SymbolTable.varExists (Token.VarName name) (symbolTable ctx)
+        then return ()
+        else put $ ctx { symbolTable = SymbolTable.insertVar (Token.VarName name) methodVar actualType (symbolTable ctx) }
 
 codeGenStmts :: [ Ast.Stmt ] -> CodeGenContext Cfg
 codeGenStmts = fmap (foldl' Cfg.concat Cfg.Empty) . codeGenStmts'
@@ -223,6 +263,7 @@ codeGenStmtReturnNothing stmtReturn = do
 codeGenStmtReturnValue :: Location -> Ast.Exp -> CodeGenContext Cfg
 codeGenStmtReturnValue loc exp = do
     returnValue' <- codeGenExp exp
+    updateReturnType (inferredActualType returnValue')
     let content' = Bitcode.ReturnContent (Just (generatedValue returnValue'))
     let returnInstruction = Bitcode.Return content'
     let instruction = Bitcode.Instruction loc returnInstruction
@@ -309,7 +350,7 @@ codeGenStmtFunc stmtFunc = do
     endScope
     ctx <- get
     let callable = decFuncToCallable stmtFunc (Cfg.concat annotationsCfg (Cfg.concat params' body)) annotations
-    let callables' = callable : callables ctx
+    let callables' = Data.Set.insert callable (callables ctx)
     let funcName' = Token.VarName $ Token.getFuncNameToken (Ast.stmtFuncName stmtFunc)
     let r = Ast.stmtFuncReturnType stmtFunc
     returnType <- case r of { Nothing -> return ActualType.Any; Just r' -> inferredActualType <$> codeGenVar r' }
@@ -699,7 +740,7 @@ handleLambdaCallable lambda = do { beginScope; callable <- handleLambda lambda; 
 
 -- | insert the callable to the state
 insertLambdaCallable :: Ast.ExpLambdaContent -> CodeGenContext ()
-insertLambdaCallable expLambda = do { c <- handleLambdaCallable expLambda; ctx <- get; put $ ctx { callables = c:(callables ctx) } }
+insertLambdaCallable expLambda = do { c <- handleLambdaCallable expLambda; ctx <- get; put $ ctx { callables = Data.Set.insert c (callables ctx) } }
 
 codeGenLambdaParams :: Ast.ExpLambdaContent -> CodeGenContext Cfg
 codeGenLambdaParams = codeGenParams . Ast.expLambdaParams
@@ -1025,9 +1066,18 @@ codeGenExpCallSameFileFunc f v cfg args loc = let
     newFqn = ActualType.toFqn (ActualType.CallFuncFromImportedFile loc (Token.content name) file)
     in codeGenExpCallDefault (ActualType.Function f) (setNewFqnToVariable v newFqn) cfg args loc
 
+-- | a bare call of a method of the hosting class ( `m(..)` = `self.m(..)` ) :
+-- a call of a method of that class. The output keeps the return type.
+codeGenExpCallMethodOfClass :: ActualType.MethodOfClassContent -> Bitcode.Variable -> Cfg -> [ GeneratedExp ] -> Location -> GeneratedExp
+codeGenExpCallMethodOfClass m v cfg args loc = let
+    method = Token.content (Token.getMethodNameToken (ActualType.methodName m))
+    newFqn = ActualType.toFqn (ActualType.CallMethodOfClass loc method (ActualType.methodOfClass m))
+    in codeGenExpCallDefault (ActualType.MethodOfClass m) (setNewFqnToVariable v newFqn) cfg args loc
+
 codeGenExpCall'' :: ActualType -> Bitcode.Variable -> Cfg -> [ GeneratedExp ] -> Location -> GeneratedExp
 codeGenExpCall'' (ActualType.FieldedAccess t f) = codeGenExpCallFielded t f
 codeGenExpCall'' (ActualType.Function f) = codeGenExpCallSameFileFunc f
+codeGenExpCall'' (ActualType.MethodOfClass m) = codeGenExpCallMethodOfClass m
 codeGenExpCall'' (ActualType.FirstPartyImport (ActualType.FirstPartyImportContent f (Just i))) = codeGenExpCall1stPartyFunc f i
 codeGenExpCall'' calleeActualType = codeGenExpCallDefault calleeActualType
 
@@ -1049,6 +1099,7 @@ nullGeneratedExp loc = GeneratedExp Cfg.Empty (nullBitcodeValue loc) ActualType.
 
 getReturnActualType' :: ActualType -> ActualType
 getReturnActualType' (ActualType.Function f) = ActualType.returnType f
+getReturnActualType' (ActualType.MethodOfClass m) = ActualType.methodReturnType m
 getReturnActualType' actualType = actualType
 
 -- | during stmt assign, it could be the case that

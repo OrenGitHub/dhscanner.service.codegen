@@ -31,7 +31,7 @@ data ActualType
    | ClassName ClassNameContent
    | ClassInstance ClassInstanceContent
    | Lambda LambdaContent
-   | Method MethodContent
+   | MethodOfClass MethodOfClassContent
    | UntypedNamedParam Token.ParamName
    | CallMethodOfClass Location String Token.ClassName
    | CallMethodOfUntypedNamedParam Location String Token.ParamName
@@ -66,7 +66,7 @@ data ClassInstanceContent
 newtype Methods
    = Methods
      {
-         actualMethods :: Map String MethodContent
+         actualMethods :: Map String MethodOfClassContent
      }
      deriving ( Show, Eq, Ord, Generic )
 
@@ -82,7 +82,7 @@ data Param
      {
          paramName :: Token.ParamName,
          paramSerialIdx :: Int,
-         paramActualTypeHashed :: String
+         paramActualType :: ActualType
      }
      deriving ( Show, Eq, Ord, Generic )
 
@@ -95,11 +95,13 @@ data FunctionContent
      }
      deriving ( Show, Eq, Ord )
 
-data MethodContent
-   = MethodContent
+data MethodOfClassContent
+   = MethodOfClassContent
      {
          methodName :: Token.MethodName,
-         methodParams :: Params
+         methodParams :: Params,
+         methodOfClass :: Token.ClassName,
+         methodReturnType :: ActualType
      }
      deriving ( Show, Eq, Ord, Generic )
 
