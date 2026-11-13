@@ -99,11 +99,18 @@ codeGenStmtClassMethodsTwoPasses methods = do
     put (firstPass { symbolTable = symbolTable secondPass })
     codeGenMethods methods
 
+-- | the class instance a method runs on, in the class scope : ruby / python
+-- `self` and java / js / ts `this`. A call on it, `this.m(..)`, is a call of
+-- a method of the class ( kb_call_method_of_class ), was 'Unknown.m' for
+-- `this` ( runner #157 ).
 insertSelf :: Token.ClassName -> CodeGenContext ()
-insertSelf name = do
+insertSelf name = mapM_ (insertSelfNamed name) [ "self", "this" ]
+
+insertSelfNamed :: Token.ClassName -> String -> CodeGenContext ()
+insertSelfNamed name selfName = do
     ctx <- get
     let classNameToken = Token.getClassNameToken name
-    let selfVarName = Token.VarName (Token.Named "self" (Token.location classNameToken))
+    let selfVarName = Token.VarName (Token.Named selfName (Token.location classNameToken))
     let actualType = ActualType.ClassInstance (ActualType.ClassInstanceContent ActualType.Self name)
     let classFqn = ActualType.toFqn actualType
     let selfSrcVar = Bitcode.SrcVariable classFqn selfVarName
