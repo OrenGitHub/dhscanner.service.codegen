@@ -42,6 +42,7 @@ data ActualType
    | FirstPartyDirImport FirstPartyDirImportContent
    | ThirdPartyImport ThirdPartyImportContent
    | FieldedAccess ActualType Token.FieldName
+   | ReturnTypeOf Location ActualType
    deriving ( Show, Eq, Ord, Generic )
 
 newtype Classes = Classes { actualClasses :: Map String ClassNameContent } deriving ( Show )
@@ -150,6 +151,7 @@ toFqn (FirstPartyDirImport (FirstPartyDirImportContent d a )) = Fqn.FirstPartyDi
 toFqn NativeTypeStr = Fqn.NativeTypeString
 toFqn (ClassName (ClassNameContent c)) = Fqn.ClassName (Fqn.ClassNameContent c)
 toFqn (FieldedAccess t field) = Fqn.FieldedAccess (toFqn t) field
+toFqn (ReturnTypeOf call t) = Fqn.ReturnTypeOf call (toFqn t)
 toFqn (ClassInstance (ClassInstanceContent This name)) = Fqn.ClassInstance (Fqn.ClassInstanceContent Fqn.This name)
 toFqn (ClassInstance (ClassInstanceContent Self name)) = Fqn.ClassInstance (Fqn.ClassInstanceContent Fqn.Self name)
 toFqn (CallMethodOfClass call method c) = Fqn.CallMethodOfClass call method c

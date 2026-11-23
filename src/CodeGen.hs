@@ -1013,7 +1013,7 @@ codeGenExpCallMethod3' v (Token.FieldName (Token.Named method _)) p cfg args loc
 
 codeGenExpCallDefault :: ActualType -> Bitcode.Variable -> Cfg -> [ GeneratedExp ] -> Location -> GeneratedExp
 codeGenExpCallDefault calleeActualType v cfg args loc = let
-    actualType = getReturnActualType' calleeActualType
+    actualType = getReturnActualType' loc calleeActualType
     output = Bitcode.TmpVariableCtor (Bitcode.TmpVariable (ActualType.toFqn actualType) loc)
     args' = Data.List.map generatedValue args
     callInstruction = Bitcode.Instruction loc (Bitcode.Call (Bitcode.CallContent output v args' loc))
@@ -1097,10 +1097,23 @@ nullBitcodeValue = Bitcode.ConstValueCtor . Bitcode.ConstNullValue . Token.Const
 nullGeneratedExp :: Location -> GeneratedExp
 nullGeneratedExp loc = GeneratedExp Cfg.Empty (nullBitcodeValue loc) ActualType.Any
 
-getReturnActualType' :: ActualType -> ActualType
-getReturnActualType' (ActualType.Function f) = ActualType.returnType f
-getReturnActualType' (ActualType.MethodOfClass m) = ActualType.methodReturnType m
-getReturnActualType' actualType = actualType
+-- | the type of the value a call at @loc@ returns. A callee with no known
+-- return type gives 'ActualType.ReturnTypeOf' of the callee : the value is
+-- not the callee ( @User::where( .. )@ is not @User.where@ ), the predicates
+-- type it. A class name is a constructor call, its value the class itself.
+getReturnActualType' :: Location -> ActualType -> ActualType
+getReturnActualType' _ (ActualType.Function f) = ActualType.returnType f
+getReturnActualType' _ (ActualType.MethodOfClass m) = ActualType.methodReturnType m
+getReturnActualType' loc actualType@(ActualType.FieldedAccess _ _) = ActualType.ReturnTypeOf loc actualType
+getReturnActualType' loc actualType@(ActualType.ThirdPartyImport _) = ActualType.ReturnTypeOf loc actualType
+getReturnActualType' loc actualType@(ActualType.FirstPartyImport _) = ActualType.ReturnTypeOf loc actualType
+getReturnActualType' loc actualType@(ActualType.FirstPartyDirImport _) = ActualType.ReturnTypeOf loc actualType
+getReturnActualType' loc actualType@(ActualType.CallMethodOfClass _ _ _) = ActualType.ReturnTypeOf loc actualType
+getReturnActualType' loc actualType@(ActualType.CallMethodOfUntypedNamedParam _ _ _) = ActualType.ReturnTypeOf loc actualType
+getReturnActualType' loc actualType@(ActualType.CallFuncFromImportedDir _ _ _) = ActualType.ReturnTypeOf loc actualType
+getReturnActualType' loc actualType@(ActualType.CallFuncFromImportedFile _ _ _) = ActualType.ReturnTypeOf loc actualType
+getReturnActualType' loc actualType@(ActualType.UntypedNamedParam _) = ActualType.ReturnTypeOf loc actualType
+getReturnActualType' _ actualType = actualType
 
 -- | during stmt assign, it could be the case that
 -- a simple variable is also defined. if so, we need
